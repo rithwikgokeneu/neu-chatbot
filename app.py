@@ -21,7 +21,6 @@ from flask_cors import CORS
 from authlib.integrations.flask_client import OAuth
 from groq import Groq
 from pinecone import Pinecone
-from sentence_transformers import SentenceTransformer
 
 import db as DB
 
@@ -151,16 +150,24 @@ When the user asks to be reminded about something:
 
 Admissions · Financial aid · Co-op programs · Academic policies · Course registration · Housing · Dining · Campus events · Parking · Transit · Campus news · Research opportunities · Student services · Canvas assignments & deadlines"""
 
-print("Loading vector index...", end=" ", flush=True)
-embed_model = SentenceTransformer(EMBED_MODEL)
+HF_EMBED_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/{EMBED_MODEL}"
+
+def embed_query(text):
+    """Embed query via HuggingFace Inference API (free, no local model needed)."""
+    r = req_lib.post(HF_EMBED_URL, json={"inputs": text, "options": {"wait_for_model": True}}, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+print("Connecting to Pinecone...", end=" ", flush=True)
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
 pc_index = pc.Index(PINECONE_INDEX)
-print(f"OK (Pinecone index: {PINECONE_INDEX})")
+print(f"OK (index: {PINECONE_INDEX})")
 
 # ─── Live Indexer (background refresh) ───────────────────────────────────────
 
 import live_indexer as _indexer
-_indexer.start(refresh_hours=6)   # re-scrapes all NEU pages every 6 hours
+if not os.getenv("VERCEL"):
+    _indexer.start(refresh_hours=6)   # re-scrapes all NEU pages every 6 hours (local only)
 
 # ─── Live data ────────────────────────────────────────────────────────────────
 
@@ -591,7 +598,7 @@ def whatsapp_reminder_text(item: dict) -> str:
 # ─── RAG ──────────────────────────────────────────────────────────────────────
 
 def retrieve(query):
-    query_vec = embed_model.encode(query).tolist()
+    query_vec = embed_query(query)
     results = pc_index.query(
         vector=query_vec, top_k=TOP_K,
         include_metadata=True,

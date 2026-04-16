@@ -6,8 +6,11 @@ Tables: users, conversations, messages
 import sqlite3
 import os
 
-DB_PATH = "data/neu_chatbot.db"
-os.makedirs("data", exist_ok=True)
+if os.getenv("VERCEL"):
+    DB_PATH = "/tmp/neu_chatbot.db"
+else:
+    DB_PATH = "data/neu_chatbot.db"
+    os.makedirs("data", exist_ok=True)
 
 
 def get_conn():
