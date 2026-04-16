@@ -18,7 +18,6 @@ from bs4 import BeautifulSoup
 from flask import (Flask, request, jsonify,
                    session, redirect, url_for, send_from_directory)
 from flask_cors import CORS
-from authlib.integrations.flask_client import OAuth
 from groq import Groq
 
 import db as DB
@@ -46,17 +45,13 @@ DB.init_db()
 logging.basicConfig(level=logging.WARNING)
 logging.getLogger("live_indexer").setLevel(logging.INFO)
 
-# ─── OAuth ────────────────────────────────────────────────────────────────────
+# ─── Google OAuth (manual, serverless-compatible) ────────────────────────────
 
-oauth = OAuth(app)
-
-oauth.register(
-    name="google",
-    client_id=os.getenv("GOOGLE_CLIENT_ID"),
-    client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-    server_metadata_url="https://accounts.google.com/.well-known/openid-configuration",
-    client_kwargs={"scope": "openid email profile"},
-)
+GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_AUTH_URL      = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN_URL     = "https://oauth2.googleapis.com/token"
+GOOGLE_USERINFO_URL  = "https://www.googleapis.com/oauth2/v3/userinfo"
 
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
@@ -769,45 +764,84 @@ def auth_providers():
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("login_page"))
+    return redirect("/login")
 
 
-@app.route("/auth/<provider>")
-def auth_login(provider):
-    client   = oauth.create_client(provider)
-    # Build redirect URI explicitly for Vercel HTTPS
-    # Always use the same host the user is currently on (cookie domain must match)
+@app.route("/auth/google")
+def auth_google():
     scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
-    redirect_uri = f"{scheme}://{request.host}/auth/{provider}/callback"
-    return client.authorize_redirect(redirect_uri)
+    redirect_uri = f"{scheme}://{request.host}/auth/google/callback"
+    state = str(uuid.uuid4())
+    # Store state in a short-lived cookie (not Flask session — survives serverless)
+    from urllib.parse import urlencode
+    params = urlencode({
+        "client_id":     GOOGLE_CLIENT_ID,
+        "redirect_uri":  redirect_uri,
+        "response_type": "code",
+        "scope":         "openid email profile",
+        "state":         state,
+        "access_type":   "offline",
+        "prompt":        "select_account",
+    })
+    resp = redirect(f"{GOOGLE_AUTH_URL}?{params}")
+    resp.set_cookie("oauth_state", state, max_age=600, httponly=True,
+                    secure=IS_VERCEL, samesite="Lax")
+    return resp
 
 
-@app.route("/auth/<provider>/callback")
-def auth_callback(provider):
+@app.route("/auth/google/callback")
+def auth_google_callback():
     try:
-        client = oauth.create_client(provider)
-        token  = client.authorize_access_token()
+        # Verify state from cookie
+        state_cookie = request.cookies.get("oauth_state", "")
+        state_param  = request.args.get("state", "")
+        if not state_cookie or state_cookie != state_param:
+            logging.error(f"OAuth state mismatch: cookie={state_cookie!r} param={state_param!r}")
+            return redirect("/login?error=state_mismatch")
 
-        if provider == "google":
-            info   = token.get("userinfo") or client.userinfo()
-            uid    = f"google_{info['sub']}"
-            name   = info.get("name", "User")
-            email  = info.get("email", "")
-            avatar = info.get("picture", "")
+        code = request.args.get("code")
+        if not code:
+            return redirect("/login?error=no_code")
 
-        else:
-            return redirect("/login?error=unsupported_provider")
+        scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
+        redirect_uri = f"{scheme}://{request.host}/auth/google/callback"
 
-        user = DB.upsert_user(uid, name, email, avatar, provider)
-        session["user_id"]   = user["id"]
-        session["user_name"] = user["name"]
-        session["user_email"]= user["email"]
-        session["user_avatar"]= user.get("avatar","")
-        session.permanent    = True
-        return redirect("/app")
+        # Exchange code for token
+        token_resp = req_lib.post(GOOGLE_TOKEN_URL, data={
+            "code":          code,
+            "client_id":     GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri":  redirect_uri,
+            "grant_type":    "authorization_code",
+        }, timeout=10)
+        token_resp.raise_for_status()
+        tokens = token_resp.json()
+
+        # Get user info
+        user_resp = req_lib.get(GOOGLE_USERINFO_URL, headers={
+            "Authorization": f"Bearer {tokens['access_token']}"
+        }, timeout=10)
+        user_resp.raise_for_status()
+        info = user_resp.json()
+
+        uid    = f"google_{info['sub']}"
+        name   = info.get("name", "User")
+        email  = info.get("email", "")
+        avatar = info.get("picture", "")
+
+        user = DB.upsert_user(uid, name, email, avatar, "google")
+        session["user_id"]    = user["id"]
+        session["user_name"]  = user["name"]
+        session["user_email"] = user["email"]
+        session["user_avatar"] = user.get("avatar", "")
+        session.permanent     = True
+
+        resp = redirect("/app")
+        resp.delete_cookie("oauth_state")
+        return resp
 
     except Exception as e:
-        logging.error(f"Auth error ({provider}): {e}")
+        logging.error(f"Auth error (google): {e}")
         return redirect("/login?error=auth_failed")
 
 
