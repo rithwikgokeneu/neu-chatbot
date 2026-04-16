@@ -810,6 +810,31 @@ def api_me():
     })
 
 
+@app.route("/api/debug")
+def api_debug():
+    """Diagnostic endpoint — check all services."""
+    results = {"session": bool(session.get("user_id")), "env": {}}
+    for key in ["GROQ_API_KEY", "PINECONE_API_KEY", "PINECONE_HOST", "PINECONE_INDEX", "HF_TOKEN", "FLASK_SECRET"]:
+        val = os.getenv(key, "")
+        results["env"][key] = f"{val[:6]}..." if val else "MISSING"
+    # Test HF
+    try:
+        r = req_lib.post(
+            f"https://router.huggingface.co/hf-inference/models/{HF_EMBED_MODEL}",
+            json={"inputs": "test"}, headers={"Authorization": f"Bearer {HF_TOKEN}"}, timeout=10)
+        results["hf"] = {"status": r.status_code, "dim": len(r.json()) if r.ok else r.text[:100]}
+    except Exception as e:
+        results["hf"] = {"error": str(e)}
+    # Test Pinecone
+    try:
+        host = _pinecone_host()
+        r = req_lib.get(f"{host}/describe_index_stats", headers={"Api-Key": PINECONE_API_KEY}, timeout=10)
+        results["pinecone"] = {"status": r.status_code, "vectors": r.json().get("totalVectorCount") if r.ok else r.text[:100]}
+    except Exception as e:
+        results["pinecone"] = {"error": str(e)}
+    return jsonify(results)
+
+
 # ─── Serve React SPA ────────────────────────────────────────────────────────
 
 def _serve_react():

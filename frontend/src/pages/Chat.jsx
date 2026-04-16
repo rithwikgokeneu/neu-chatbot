@@ -65,11 +65,13 @@ export default function Chat() {
     setMsgs(prev => [...prev, { role: 'user', content: msg }])
     try {
       const r = await fetch('/chat', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: msg, conversation_id: activeId }) })
-      const d = await r.json()
+      const txt = await r.text()
+      let d
+      try { d = JSON.parse(txt) } catch { d = { error: `Server error (${r.status}): ${txt.slice(0, 200)}` } }
       setSending(false)
       if (d.error) { setMsgs(prev => [...prev, { role: 'assistant', content: 'Sorry \u2014 ' + d.error }]) }
       else { setMsgs(prev => [...prev, { role: 'assistant', content: d.answer }]); if (!activeId) setActiveId(d.conversation_id); loadConvos() }
-    } catch { setSending(false); setMsgs(prev => [...prev, { role: 'assistant', content: 'Connection error.' }]) }
+    } catch (err) { setSending(false); setMsgs(prev => [...prev, { role: 'assistant', content: 'Connection error: ' + err.message }]) }
   }
 
   const newChat = () => { setActiveId(null); setMsgs([]); inputRef.current?.focus() }
