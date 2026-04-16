@@ -59,6 +59,14 @@ oauth.register(
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
+def _ensure_user_in_db():
+    """On Vercel, /tmp DB is ephemeral. Re-create user from session cookie."""
+    uid = session.get("user_id")
+    if uid and not DB.get_user(uid):
+        DB.upsert_user(uid, session.get("user_name", "User"),
+                        session.get("user_email", ""),
+                        session.get("user_avatar", ""), "google")
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -66,6 +74,7 @@ def login_required(f):
             if request.path.startswith("/api/") or request.path == "/chat":
                 return jsonify({"error": "not authenticated"}), 401
             return redirect("/login")
+        _ensure_user_in_db()
         return f(*args, **kwargs)
     return decorated
 
@@ -184,6 +193,7 @@ def pinecone_stats():
     r.raise_for_status()
     return r.json()
 
+_indexer = None
 if not os.getenv("VERCEL"):
     print("Connecting to Pinecone...", end=" ", flush=True)
     try:
@@ -193,8 +203,11 @@ if not os.getenv("VERCEL"):
         print(f"Warning: {e}")
 
     # Live Indexer (background refresh) — local only
-    import live_indexer as _indexer
-    _indexer.start(refresh_hours=6)
+    try:
+        import live_indexer as _indexer
+        _indexer.start(refresh_hours=6)
+    except ImportError:
+        pass
 
 # ─── Live data ────────────────────────────────────────────────────────────────
 
@@ -923,13 +936,15 @@ def reset():
     return jsonify({"status": "ok"})
 
 
+_DEFAULT_IDX_STATE = {"status": "disabled", "last_run": None, "pages_indexed": 0, "chunks_upserted": 0, "error": None}
+
 @app.route("/api/live-feed")
 @login_required
 def live_feed():
     _, events  = fetch_live_events()
     _, news    = fetch_live_news()
     _, parking = fetch_live_parking()
-    idx = _indexer.state
+    idx = _indexer.state if _indexer else _DEFAULT_IDX_STATE
     return jsonify({
         "events":  events[:10],
         "news":    news[:8],
@@ -937,9 +952,9 @@ def live_feed():
         "ts":      datetime.now().strftime("%I:%M %p"),
         "index": {
             "status":          idx["status"],
-            "last_run":        idx["last_run"].isoformat() if idx["last_run"] else None,
-            "pages_indexed":   idx["pages_indexed"],
-            "chunks_upserted": idx["chunks_upserted"],
+            "last_run":        idx["last_run"].isoformat() if idx.get("last_run") else None,
+            "pages_indexed":   idx.get("pages_indexed", 0),
+            "chunks_upserted": idx.get("chunks_upserted", 0),
         }
     })
 
@@ -947,13 +962,13 @@ def live_feed():
 @app.route("/api/index/status")
 @login_required
 def index_status():
-    idx = _indexer.state
+    idx = _indexer.state if _indexer else _DEFAULT_IDX_STATE
     return jsonify({
         "status":          idx["status"],
-        "last_run":        idx["last_run"].isoformat() if idx["last_run"] else None,
-        "pages_indexed":   idx["pages_indexed"],
-        "chunks_upserted": idx["chunks_upserted"],
-        "error":           idx["error"],
+        "last_run":        idx["last_run"].isoformat() if idx.get("last_run") else None,
+        "pages_indexed":   idx.get("pages_indexed", 0),
+        "chunks_upserted": idx.get("chunks_upserted", 0),
+        "error":           idx.get("error"),
         "total_chunks":    pinecone_stats().get("totalVectorCount", 0),
     })
 
@@ -961,7 +976,8 @@ def index_status():
 @app.route("/api/index/refresh", methods=["POST"])
 @login_required
 def index_refresh():
-    """Manually trigger a live re-index in the background."""
+    if not _indexer:
+        return jsonify({"error": "Indexer not available in serverless mode"}), 400
     if _indexer.state["status"] == "running":
         return jsonify({"error": "Indexer already running"}), 409
     import threading
