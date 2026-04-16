@@ -149,12 +149,21 @@ When the user asks to be reminded about something:
 
 Admissions · Financial aid · Co-op programs · Academic policies · Course registration · Housing · Dining · Campus events · Parking · Transit · Campus news · Research opportunities · Student services · Canvas assignments & deadlines"""
 
-from fastembed import TextEmbedding
-_embed_model = TextEmbedding(f"sentence-transformers/{EMBED_MODEL}")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 def embed_query(text):
-    """Embed query using fastembed (lightweight ONNX, no PyTorch)."""
-    return list(_embed_model.embed([text]))[0].tolist()
+    """Embed query via HuggingFace Inference API (free with token)."""
+    headers = {"Content-Type": "application/json"}
+    if HF_TOKEN:
+        headers["Authorization"] = f"Bearer {HF_TOKEN}"
+    r = req_lib.post(
+        f"https://router.huggingface.co/hf-inference/models/sentence-transformers/{EMBED_MODEL}",
+        json={"inputs": text},
+        headers=headers,
+        timeout=15,
+    )
+    r.raise_for_status()
+    return r.json()
 
 # ─── Pinecone REST client (no SDK needed) ────────────────────────────────────
 
