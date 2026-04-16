@@ -51,26 +51,6 @@ oauth.register(
     client_kwargs={"scope": "openid email profile"},
 )
 
-oauth.register(
-    name="microsoft",
-    client_id=os.getenv("MICROSOFT_CLIENT_ID"),
-    client_secret=os.getenv("MICROSOFT_CLIENT_SECRET"),
-    server_metadata_url=(
-        "https://login.microsoftonline.com/common/v2.0/"
-        ".well-known/openid-configuration"
-    ),
-    client_kwargs={"scope": "openid email profile"},
-)
-
-oauth.register(
-    name="github",
-    client_id=os.getenv("GITHUB_CLIENT_ID"),
-    client_secret=os.getenv("GITHUB_CLIENT_SECRET"),
-    access_token_url="https://github.com/login/oauth/access_token",
-    authorize_url="https://github.com/login/oauth/authorize",
-    api_base_url="https://api.github.com/",
-    client_kwargs={"scope": "user:email"},
-)
 
 # ─── Auth helpers ─────────────────────────────────────────────────────────────
 
@@ -149,17 +129,15 @@ When the user asks to be reminded about something:
 
 Admissions · Financial aid · Co-op programs · Academic policies · Course registration · Housing · Dining · Campus events · Parking · Transit · Campus news · Research opportunities · Student services · Canvas assignments & deadlines"""
 
-HF_TOKEN = os.getenv("HF_TOKEN", "")
+HF_TOKEN     = os.getenv("HF_TOKEN", "")
+HF_EMBED_MODEL = "BAAI/bge-small-en-v1.5"   # 384-dim, works on HF free inference
 
 def embed_query(text):
     """Embed query via HuggingFace Inference API (free with token)."""
-    headers = {"Content-Type": "application/json"}
-    if HF_TOKEN:
-        headers["Authorization"] = f"Bearer {HF_TOKEN}"
     r = req_lib.post(
-        f"https://router.huggingface.co/hf-inference/models/sentence-transformers/{EMBED_MODEL}",
+        f"https://router.huggingface.co/hf-inference/models/{HF_EMBED_MODEL}",
         json={"inputs": text},
-        headers=headers,
+        headers={"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/json"},
         timeout=15,
     )
     r.raise_for_status()
@@ -763,8 +741,6 @@ def auth_providers():
         return bool(val) and val != placeholder
     return jsonify({
         "google":    _ok("GOOGLE_CLIENT_ID",    "your-google-client-id.apps.googleusercontent.com"),
-        "microsoft": _ok("MICROSOFT_CLIENT_ID", "your-microsoft-client-id"),
-        "github":    _ok("GITHUB_CLIENT_ID",    "your-github-client-id"),
     })
 
 
@@ -794,25 +770,8 @@ def auth_callback(provider):
             email  = info.get("email", "")
             avatar = info.get("picture", "")
 
-        elif provider == "microsoft":
-            info   = token.get("userinfo") or client.userinfo()
-            uid    = f"ms_{info['sub']}"
-            name   = info.get("name", info.get("preferred_username","User"))
-            email  = info.get("email", info.get("preferred_username",""))
-            avatar = ""
-
-        elif provider == "github":
-            resp   = client.get("user")
-            info   = resp.json()
-            uid    = f"gh_{info['id']}"
-            name   = info.get("name") or info.get("login","User")
-            email  = info.get("email","")
-            avatar = info.get("avatar_url","")
-            if not email:
-                emails_resp = client.get("user/emails")
-                for e in emails_resp.json():
-                    if e.get("primary"):
-                        email = e["email"]; break
+        else:
+            return redirect("/login?error=unsupported_provider")
 
         user = DB.upsert_user(uid, name, email, avatar, provider)
         session["user_id"]   = user["id"]
