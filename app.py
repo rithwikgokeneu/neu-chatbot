@@ -31,7 +31,9 @@ app = Flask(__name__, static_folder=REACT_BUILD, static_url_path="")
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
 IS_VERCEL = bool(os.getenv("VERCEL"))
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"]   = IS_VERCEL     # True on HTTPS (Vercel), False locally
+app.config["SESSION_COOKIE_SECURE"]   = IS_VERCEL
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_PATH"]    = "/"
 app.config["SERVER_NAME"]             = None
 app.config["PREFERRED_URL_SCHEME"]    = "https" if IS_VERCEL else "http"
 CORS(app, supports_credentials=True, origins=[
@@ -774,12 +776,9 @@ def logout():
 def auth_login(provider):
     client   = oauth.create_client(provider)
     # Build redirect URI explicitly for Vercel HTTPS
-    # Use OAUTH_REDIRECT_BASE if set, otherwise derive from request
-    base = os.getenv("OAUTH_REDIRECT_BASE", "")
-    if not base:
-        scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
-        base = f"{scheme}://{request.host}"
-    redirect_uri = f"{base}/auth/{provider}/callback"
+    # Always use the same host the user is currently on (cookie domain must match)
+    scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
+    redirect_uri = f"{scheme}://{request.host}/auth/{provider}/callback"
     return client.authorize_redirect(redirect_uri)
 
 
