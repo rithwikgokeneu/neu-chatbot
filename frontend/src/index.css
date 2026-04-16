@@ -1,0 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+:root {
+  /* Airbnb-inspired palette */
+  --rausch: #ff385c;
+  --rausch-deep: #e00b41;
+  --rausch-glow: rgba(255,56,92,0.15);
+  --rausch-dim: rgba(255,56,92,0.08);
+
+  --text-primary: #222222;
+  --text-secondary: #6a6a6a;
+  --text-disabled: rgba(0,0,0,0.24);
+  --text-white: #ffffff;
+  --text-error: #c13515;
+  --text-link: #428bff;
+
+  --bg: #ffffff;
+  --bg-secondary: #f7f7f7;
+  --bg-tertiary: #f2f2f2;
+  --bg-hover: #f0f0f0;
+  --bg-active: #ebebeb;
+
+  --border: #dddddd;
+  --border-light: #ebebeb;
+
+  --shadow-card: rgba(0,0,0,0.02) 0px 0px 0px 1px, rgba(0,0,0,0.04) 0px 2px 6px, rgba(0,0,0,0.1) 0px 4px 8px;
+  --shadow-hover: rgba(0,0,0,0.08) 0px 4px 12px;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.06);
+
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-xl: 32px;
+  --radius-full: 50%;
+
+  --transition: 0.2s cubic-bezier(0.4,0,0.2,1);
+
+  /* NEU brand (secondary) */
+  --neu-red: #c8102e;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: 'Inter', -apple-system, system-ui, Roboto, 'Helvetica Neue', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  color: var(--text-primary);
+  background: var(--bg);
+  line-height: 1.5;
+  margin: 0;
+}
+
+a { text-decoration: none; color: inherit; }
+button { font-family: inherit; cursor: pointer; border: none; background: none; }
+input, textarea { font-family: inherit; }

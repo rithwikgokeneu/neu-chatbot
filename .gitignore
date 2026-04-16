@@ -1,0 +1,22 @@
+# Environment
+.env
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Data & logs
+data/
+logs/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Design
+DESIGN.md
+
+# OS
+.DS_Store
