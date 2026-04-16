@@ -487,13 +487,21 @@ def fetch_canvas_data(user_id):
             cid   = course["id"]
             cname = course.get("name", f"Course {cid}")
 
-            # 2. Assignments
+            # 2. Assignments (include submission status to filter completed)
             try:
                 asgns = _canvas_get(base, token, f"/courses/{cid}/assignments", {
                     "per_page": 50, "order_by": "due_at",
-                    "bucket": "future"
+                    "include[]": ["submission"],
                 })
                 for a in (asgns if isinstance(asgns, list) else []):
+                    # Skip if already submitted/graded
+                    sub = a.get("submission", {}) or {}
+                    workflow = sub.get("workflow_state", "")
+                    if workflow in ("submitted", "graded", "complete"):
+                        continue
+                    # Skip if explicitly marked as submitted
+                    if a.get("has_submitted_submissions"):
+                        continue
                     items.append({
                         "id":      f"asgn_{a['id']}",
                         "type":    "assignment",
@@ -504,15 +512,18 @@ def fetch_canvas_data(user_id):
                         "urgency": compute_urgency(a.get("due_at")),
                         "url":     a.get("html_url", ""),
                         "points":  a.get("points_possible"),
-                        "submitted": a.get("has_submitted_submissions", False),
+                        "submitted": False,
                     })
             except Exception:
                 pass
 
-            # 3. Quizzes
+            # 3. Quizzes (skip completed)
             try:
                 quizzes = _canvas_get(base, token, f"/courses/{cid}/quizzes", {"per_page": 50})
                 for q in (quizzes if isinstance(quizzes, list) else []):
+                    # Skip locked or completed quizzes
+                    if q.get("locked_for_user") or q.get("all_dates_completed"):
+                        continue
                     items.append({
                         "id":      f"quiz_{q['id']}",
                         "type":    "quiz",
