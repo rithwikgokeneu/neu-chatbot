@@ -20,7 +20,6 @@ from flask import (Flask, render_template, request, jsonify,
 from flask_cors import CORS
 from authlib.integrations.flask_client import OAuth
 from groq import Groq
-from pinecone import Pinecone
 
 import db as DB
 
@@ -93,7 +92,7 @@ def current_user():
 
 # ─── RAG / Vector DB ──────────────────────────────────────────────────────────
 
-PINECONE_INDEX = os.getenv("PINECONE_INDEX", "neu-chatbot")
+PINECONE_INDEX = os.getenv("PINECONE_INDEX", "quickstart")
 EMBED_MODEL    = "all-MiniLM-L6-v2"
 TOP_K          = 8          # more chunks → richer context
 MAX_HISTORY  = 14         # cap messages sent to LLM to avoid token overflow
@@ -150,18 +149,52 @@ When the user asks to be reminded about something:
 
 Admissions · Financial aid · Co-op programs · Academic policies · Course registration · Housing · Dining · Campus events · Parking · Transit · Campus news · Research opportunities · Student services · Canvas assignments & deadlines"""
 
-HF_EMBED_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/{EMBED_MODEL}"
+from fastembed import TextEmbedding
+_embed_model = TextEmbedding(f"sentence-transformers/{EMBED_MODEL}")
 
 def embed_query(text):
-    """Embed query via HuggingFace Inference API (free, no local model needed)."""
-    r = req_lib.post(HF_EMBED_URL, json={"inputs": text, "options": {"wait_for_model": True}}, timeout=15)
+    """Embed query using fastembed (lightweight ONNX, no PyTorch)."""
+    return list(_embed_model.embed([text]))[0].tolist()
+
+# ─── Pinecone REST client (no SDK needed) ────────────────────────────────────
+
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_HOST    = os.getenv("PINECONE_HOST", "")
+
+def _pinecone_host():
+    """Get Pinecone index host, auto-discover if not set."""
+    global PINECONE_HOST
+    if PINECONE_HOST:
+        return PINECONE_HOST
+    r = req_lib.get("https://api.pinecone.io/indexes",
+                    headers={"Api-Key": PINECONE_API_KEY}, timeout=10)
+    r.raise_for_status()
+    indexes = r.json().get("indexes", [])
+    for idx in indexes:
+        if idx["name"] == PINECONE_INDEX:
+            PINECONE_HOST = f"https://{idx['host']}"
+            return PINECONE_HOST
+    raise RuntimeError(f"Pinecone index '{PINECONE_INDEX}' not found")
+
+def pinecone_query(vector, top_k=TOP_K):
+    host = _pinecone_host()
+    r = req_lib.post(f"{host}/query",
+                     headers={"Api-Key": PINECONE_API_KEY, "Content-Type": "application/json"},
+                     json={"vector": vector, "topK": top_k, "includeMetadata": True},
+                     timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def pinecone_stats():
+    host = _pinecone_host()
+    r = req_lib.get(f"{host}/describe_index_stats",
+                    headers={"Api-Key": PINECONE_API_KEY}, timeout=10)
     r.raise_for_status()
     return r.json()
 
 print("Connecting to Pinecone...", end=" ", flush=True)
-pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-pc_index = pc.Index(PINECONE_INDEX)
-print(f"OK (index: {PINECONE_INDEX})")
+_pinecone_host()  # warm up / validate connection
+print(f"OK (index: {PINECONE_INDEX}, host: {PINECONE_HOST})")
 
 # ─── Live Indexer (background refresh) ───────────────────────────────────────
 
@@ -599,20 +632,17 @@ def whatsapp_reminder_text(item: dict) -> str:
 
 def retrieve(query):
     query_vec = embed_query(query)
-    results = pc_index.query(
-        vector=query_vec, top_k=TOP_K,
-        include_metadata=True,
-    )
+    results = pinecone_query(query_vec, TOP_K)
     chunks = []
     for match in results.get("matches", []):
         score = match.get("score", 0)
-        if score < 0.25:       # skip very low relevance (cosine similarity)
+        if score < 0.25:
             continue
         meta = match.get("metadata", {})
         chunks.append({
             "text": meta.get("text", ""),
             "meta": {"title": meta.get("title", ""), "url": meta.get("url", "")},
-            "dist": 1 - score,  # convert similarity to distance for compatibility
+            "dist": 1 - score,
         })
     return chunks
 
@@ -922,7 +952,7 @@ def index_status():
         "pages_indexed":   idx["pages_indexed"],
         "chunks_upserted": idx["chunks_upserted"],
         "error":           idx["error"],
-        "total_chunks":    pc_index.describe_index_stats().get("total_vector_count", 0),
+        "total_chunks":    pinecone_stats().get("totalVectorCount", 0),
     })
 
 
