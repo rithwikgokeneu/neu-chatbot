@@ -15,7 +15,7 @@ load_dotenv()
 
 import requests as req_lib
 from bs4 import BeautifulSoup
-from flask import (Flask, render_template, request, jsonify,
+from flask import (Flask, request, jsonify,
                    session, redirect, url_for, send_from_directory)
 from flask_cors import CORS
 from authlib.integrations.flask_client import OAuth
@@ -179,15 +179,17 @@ def pinecone_stats():
     r.raise_for_status()
     return r.json()
 
-print("Connecting to Pinecone...", end=" ", flush=True)
-_pinecone_host()  # warm up / validate connection
-print(f"OK (index: {PINECONE_INDEX}, host: {PINECONE_HOST})")
-
-# ─── Live Indexer (background refresh) ───────────────────────────────────────
-
-import live_indexer as _indexer
 if not os.getenv("VERCEL"):
-    _indexer.start(refresh_hours=6)   # re-scrapes all NEU pages every 6 hours (local only)
+    print("Connecting to Pinecone...", end=" ", flush=True)
+    try:
+        _pinecone_host()
+        print(f"OK (index: {PINECONE_INDEX}, host: {PINECONE_HOST})")
+    except Exception as e:
+        print(f"Warning: {e}")
+
+    # Live Indexer (background refresh) — local only
+    import live_indexer as _indexer
+    _indexer.start(refresh_hours=6)
 
 # ─── Live data ────────────────────────────────────────────────────────────────
 
