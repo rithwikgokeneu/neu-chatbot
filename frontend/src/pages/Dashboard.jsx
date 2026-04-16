@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { GraduationCap, Clock, Calendar, BookOpen, Bell, Settings, MessageSquare, RefreshCw, ExternalLink, Phone, Smartphone, Trash2, LogOut, FileText, BarChart3, ClipboardList, Megaphone, MessagesSquare, Pin, Zap, AlertTriangle, CheckCircle2, Radio } from 'lucide-react'
 
-const URGENCY = { overdue: { color: '#dc2626', bg: 'rgba(220,38,38,0.06)', label: 'OVERDUE' }, critical: { color: '#ef4444', bg: 'rgba(239,68,68,0.06)', label: 'DUE TODAY' }, high: { color: '#f97316', bg: 'rgba(249,115,22,0.06)', label: 'DUE SOON' }, medium: { color: '#eab308', bg: 'rgba(234,179,8,0.06)', label: 'THIS WEEK' }, low: { color: '#22c55e', bg: 'rgba(34,197,94,0.06)', label: 'UPCOMING' }, announcement: { color: '#6366f1', bg: 'rgba(99,102,241,0.06)', label: 'ANNOUNCEMENT' } }
+const URGENCY = { overdue: { color: '#dc2626', bg: 'rgba(220,38,38,0.06)', label: 'OVERDUE' }, critical: { color: '#ef4444', bg: 'rgba(239,68,68,0.06)', label: 'DUE TODAY' }, high: { color: '#f97316', bg: 'rgba(249,115,22,0.06)', label: 'DUE SOON' }, medium: { color: '#eab308', bg: 'rgba(234,179,8,0.06)', label: 'THIS WEEK' }, low: { color: '#22c55e', bg: 'rgba(34,197,94,0.06)', label: 'UPCOMING' }, completed: { color: '#6a6a6a', bg: 'rgba(106,106,106,0.06)', label: 'COMPLETED' }, announcement: { color: '#6366f1', bg: 'rgba(99,102,241,0.06)', label: 'ANNOUNCEMENT' } }
 const TYPE_ICONS = { assignment: FileText, quiz: BarChart3, exam: ClipboardList, announcement: Megaphone, discussion: MessagesSquare }
 
 function Toast({ msg, type }) {
@@ -78,7 +78,10 @@ export default function Dashboard() {
     showToast('\uD83D\uDD14 Reminder saved', 'ok'); await loadReminders()
   }
 
-  const stats = { overdue: items.filter(i => i.urgency === 'overdue').length, critical: items.filter(i => i.urgency === 'critical').length, high: items.filter(i => i.urgency === 'high').length, total: items.length }
+  const pending = items.filter(i => i.status === 'pending')
+  const overdue = items.filter(i => i.status === 'overdue')
+  const completed = items.filter(i => i.status === 'completed')
+  const stats = { overdue: overdue.length, critical: pending.filter(i => i.urgency === 'critical').length, high: pending.filter(i => i.urgency === 'high').length, total: pending.length }
 
   const VIEWS = [
     { id: 'today', label: "Today's Focus", Icon: Clock },
@@ -111,7 +114,7 @@ export default function Dashboard() {
               border: view === v.id ? '1px solid rgba(255,56,92,0.15)' : '1px solid transparent',
             }}>
               <v.Icon size={16} strokeWidth={view === v.id ? 2 : 1.5} /> {v.label}
-              {(v.id === 'today' && stats.overdue + stats.critical > 0) && <span style={{ marginLeft: 'auto', minWidth: 20, height: 20, background: '#ff385c', borderRadius: 10, fontSize: 11, fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px' }}>{stats.overdue + stats.critical}</span>}
+              {(v.id === 'today' && (overdue.length + stats.critical) > 0) && <span style={{ marginLeft: 'auto', minWidth: 20, height: 20, background: '#ff385c', borderRadius: 10, fontSize: 11, fontWeight: 700, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 5px' }}>{overdue.length + stats.critical}</span>}
             </div>
           ))}
           <div style={{ height: 1, background: '#ebebeb', margin: '10px 12px' }} />
@@ -170,15 +173,26 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
-            {items.filter(i => ['overdue', 'critical', 'high'].includes(i.urgency)).length > 0 && (
-              <><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}><h3 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><AlertTriangle size={16} color="#dc2626" /> Urgent</h3></div>
-              {items.filter(i => ['overdue', 'critical', 'high'].includes(i.urgency)).map(i => <TaskCard key={i.id} item={i} onReminder={saveReminder} />)}</>
+            {/* Overdue — past due and NOT submitted */}
+            {overdue.length > 0 && (
+              <><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14 }}><h3 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><AlertTriangle size={16} color="#dc2626" /> Overdue ({overdue.length})</h3></div>
+              {overdue.map(i => <TaskCard key={i.id} item={i} onReminder={saveReminder} />)}</>
             )}
-            {items.filter(i => i.urgency === 'medium').length > 0 && (
-              <><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14, marginTop: 24 }}><h3 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><Clock size={16} color="#eab308" /> This Week</h3></div>
-              {items.filter(i => i.urgency === 'medium').slice(0, 6).map(i => <TaskCard key={i.id} item={i} onReminder={saveReminder} />)}</>
+            {/* Pending — due in the future */}
+            {pending.filter(i => ['critical', 'high'].includes(i.urgency)).length > 0 && (
+              <><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14, marginTop: 24 }}><h3 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><Clock size={16} color="#f97316" /> Due Soon</h3></div>
+              {pending.filter(i => ['critical', 'high'].includes(i.urgency)).map(i => <TaskCard key={i.id} item={i} onReminder={saveReminder} />)}</>
             )}
-            {canvas && items.length === 0 && <div style={{ textAlign: 'center', padding: '48px 20px', color: '#6a6a6a' }}><div style={{ marginBottom: 12 }}><CheckCircle2 size={36} color="#22c55e" /></div><h4 style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>All clear!</h4><p style={{ fontSize: 13 }}>No upcoming deadlines.</p></div>}
+            {pending.filter(i => ['medium', 'low'].includes(i.urgency)).length > 0 && (
+              <><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14, marginTop: 24 }}><h3 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><Calendar size={16} color="#22c55e" /> Upcoming</h3></div>
+              {pending.filter(i => ['medium', 'low'].includes(i.urgency)).map(i => <TaskCard key={i.id} item={i} onReminder={saveReminder} />)}</>
+            )}
+            {/* Completed — recently done */}
+            {completed.length > 0 && (
+              <><div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 14, marginTop: 24 }}><h3 style={{ fontSize: 15, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6 }}><CheckCircle2 size={16} color="#22c55e" /> Completed ({completed.length})</h3></div>
+              {completed.map(i => <TaskCard key={i.id} item={{...i, urgency: 'low'}} />)}</>
+            )}
+            {canvas && pending.length === 0 && overdue.length === 0 && <div style={{ textAlign: 'center', padding: '48px 20px', color: '#6a6a6a' }}><div style={{ marginBottom: 12 }}><CheckCircle2 size={36} color="#22c55e" /></div><h4 style={{ fontSize: 15, fontWeight: 600, marginBottom: 6 }}>All caught up!</h4><p style={{ fontSize: 13 }}>No pending assignments or quizzes.</p></div>}
           </>)}
 
           {/* Week view */}

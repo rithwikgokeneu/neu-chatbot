@@ -457,13 +457,37 @@ def fmt_due(due_at_str):
         return due_at_str
 
 
+def _is_submitted(item):
+    """Check if assignment is already submitted/graded/complete."""
+    sub = item.get("submission", {}) or {}
+    wf = sub.get("workflow_state", "")
+    if wf in ("submitted", "graded", "complete"):
+        return True
+    if sub.get("submitted_at"):
+        return True
+    if item.get("has_submitted_submissions"):
+        return True
+    if sub.get("score") is not None:
+        return True
+    return False
+
+
+def _parse_due(due_at_str):
+    """Parse ISO date string to datetime, or None."""
+    if not due_at_str:
+        return None
+    try:
+        return datetime.fromisoformat(due_at_str.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
 def fetch_canvas_data(user_id):
-    """Fetch all Canvas academic data for a user. Returns list of item dicts."""
+    """Fetch Canvas data. Returns list of items with status: pending/overdue/completed."""
     cfg = DB.get_canvas_config(user_id)
     if not cfg:
         return None, "Canvas not connected"
 
-    # Check cache
     cached = CANVAS_CACHE.get(user_id)
     if cached and (datetime.now() - cached["ts"]).seconds < CANVAS_TTL:
         return cached["data"], None
@@ -471,55 +495,25 @@ def fetch_canvas_data(user_id):
     base  = cfg["canvas_url"]
     token = cfg["canvas_token"]
     items = []
-
-    # Cutoff: ignore anything due more than 14 days ago (definitely past)
-    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
-
-    def _is_relevant(due_at_str):
-        """True if due date is in the future or within last 14 days (or no due date)."""
-        if not due_at_str:
-            return True
-        try:
-            due = datetime.fromisoformat(due_at_str.replace("Z", "+00:00"))
-            return due > cutoff
-        except Exception:
-            return True
-
-    def _is_submitted(assignment):
-        """Check if assignment/quiz is already submitted or graded."""
-        sub = assignment.get("submission", {}) or {}
-        wf = sub.get("workflow_state", "")
-        if wf in ("submitted", "graded", "complete"):
-            return True
-        if sub.get("submitted_at"):
-            return True
-        if assignment.get("has_submitted_submissions"):
-            return True
-        # Check if score exists (graded = done)
-        if sub.get("score") is not None:
-            return True
-        return False
+    now   = datetime.now(timezone.utc)
 
     try:
-        # 1. Active courses (current term only)
+        # 1. Active courses — filter to current term
         courses = _canvas_get(base, token, "/courses", {
             "enrollment_state": "active", "per_page": 50,
-            "include[]": ["term", "total_scores"],
+            "include[]": ["term"],
         })
         if isinstance(courses, dict):
             return None, courses.get("errors", [{}])[0].get("message", "Canvas error")
 
-        # Filter to current term — skip courses from past terms
-        now = datetime.now(timezone.utc)
         active_courses = []
         for c in courses:
             term = c.get("term", {}) or {}
             end_at = term.get("end_at")
             if end_at:
                 try:
-                    term_end = datetime.fromisoformat(end_at.replace("Z", "+00:00"))
-                    if term_end < now:
-                        continue  # past term, skip
+                    if datetime.fromisoformat(end_at.replace("Z", "+00:00")) < now:
+                        continue
                 except Exception:
                     pass
             active_courses.append(c)
@@ -528,61 +522,92 @@ def fetch_canvas_data(user_id):
             cid   = course["id"]
             cname = course.get("name", f"Course {cid}")
 
-            # 2. Assignments (include submission to check completion)
+            # 2. Assignments
             try:
                 asgns = _canvas_get(base, token, f"/courses/{cid}/assignments", {
                     "per_page": 50, "order_by": "due_at",
                     "include[]": ["submission"],
                 })
                 for a in (asgns if isinstance(asgns, list) else []):
-                    if _is_submitted(a):
+                    submitted = _is_submitted(a)
+                    due_dt = _parse_due(a.get("due_at"))
+
+                    # Determine status
+                    if submitted:
+                        status = "completed"
+                    elif due_dt and due_dt < now:
+                        status = "overdue"
+                    else:
+                        status = "pending"
+
+                    # Skip completed items older than 7 days
+                    if status == "completed" and due_dt and due_dt < now - timedelta(days=7):
                         continue
-                    if not _is_relevant(a.get("due_at")):
+                    # Skip overdue items older than 30 days (ancient, probably completed but API missed it)
+                    if status == "overdue" and due_dt and due_dt < now - timedelta(days=30):
                         continue
+
                     items.append({
-                        "id":      f"asgn_{a['id']}",
-                        "type":    "assignment",
-                        "title":   a.get("name", "Untitled"),
-                        "course":  cname,
-                        "due_at":  a.get("due_at"),
-                        "due_fmt": fmt_due(a.get("due_at")),
-                        "urgency": compute_urgency(a.get("due_at")),
-                        "url":     a.get("html_url", ""),
-                        "points":  a.get("points_possible"),
-                        "submitted": False,
+                        "id":        f"asgn_{a['id']}",
+                        "type":      "assignment",
+                        "title":     a.get("name", "Untitled"),
+                        "course":    cname,
+                        "due_at":    a.get("due_at"),
+                        "due_fmt":   fmt_due(a.get("due_at")),
+                        "urgency":   compute_urgency(a.get("due_at")) if status != "completed" else "completed",
+                        "status":    status,
+                        "url":       a.get("html_url", ""),
+                        "points":    a.get("points_possible"),
+                        "submitted": submitted,
                     })
             except Exception:
                 pass
 
-            # 3. Quizzes (skip completed/locked/past)
+            # 3. Quizzes
             try:
                 quizzes = _canvas_get(base, token, f"/courses/{cid}/quizzes", {"per_page": 50})
                 for q in (quizzes if isinstance(quizzes, list) else []):
-                    if q.get("locked_for_user"):
+                    locked = q.get("locked_for_user", False)
+                    due_dt = _parse_due(q.get("due_at"))
+
+                    if locked and due_dt and due_dt < now:
+                        status = "completed"
+                    elif due_dt and due_dt < now:
+                        status = "overdue"
+                    else:
+                        status = "pending"
+
+                    if status == "completed" and due_dt and due_dt < now - timedelta(days=7):
                         continue
-                    if not _is_relevant(q.get("due_at")):
+                    if status == "overdue" and due_dt and due_dt < now - timedelta(days=30):
                         continue
+
                     items.append({
-                        "id":      f"quiz_{q['id']}",
-                        "type":    "quiz",
-                        "title":   q.get("title", "Untitled Quiz"),
-                        "course":  cname,
-                        "due_at":  q.get("due_at"),
-                        "due_fmt": fmt_due(q.get("due_at")),
-                        "urgency": compute_urgency(q.get("due_at")),
-                        "url":     q.get("html_url", ""),
-                        "points":  q.get("points_possible"),
+                        "id":         f"quiz_{q['id']}",
+                        "type":       "quiz",
+                        "title":      q.get("title", "Untitled Quiz"),
+                        "course":     cname,
+                        "due_at":     q.get("due_at"),
+                        "due_fmt":    fmt_due(q.get("due_at")),
+                        "urgency":    compute_urgency(q.get("due_at")) if status != "completed" else "completed",
+                        "status":     status,
+                        "url":        q.get("html_url", ""),
+                        "points":     q.get("points_possible"),
                         "time_limit": q.get("time_limit"),
+                        "submitted":  status == "completed",
                     })
             except Exception:
                 pass
 
-            # 4. Announcements
+            # 4. Announcements (recent only — last 14 days)
             try:
                 ann = _canvas_get(base, token, f"/courses/{cid}/discussion_topics", {
-                    "per_page": 20, "only_announcements": True
+                    "per_page": 10, "only_announcements": True
                 })
                 for a in (ann if isinstance(ann, list) else [])[:5]:
+                    posted = _parse_due(a.get("posted_at"))
+                    if posted and posted < now - timedelta(days=14):
+                        continue
                     items.append({
                         "id":      f"ann_{a['id']}",
                         "type":    "announcement",
@@ -591,17 +616,20 @@ def fetch_canvas_data(user_id):
                         "due_at":  None,
                         "due_fmt": fmt_due(a.get("posted_at")),
                         "urgency": "low",
+                        "status":  "info",
                         "url":     a.get("html_url", ""),
                         "message": a.get("message", "")[:300],
                     })
             except Exception:
                 pass
 
-        # Sort: overdue first, then by urgency, then by due_at
-        urgency_order = {"overdue": 0, "critical": 1, "high": 2, "medium": 3, "low": 4}
+        # Sort: pending first (by urgency), then overdue, then completed
+        status_order = {"pending": 0, "overdue": 1, "info": 2, "completed": 3}
+        urgency_order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "overdue": 0, "completed": 9}
         items.sort(key=lambda x: (
-            urgency_order.get(x["urgency"], 5),
-            x["due_at"] or "9999"
+            status_order.get(x.get("status"), 5),
+            urgency_order.get(x.get("urgency"), 5),
+            x.get("due_at") or "9999",
         ))
 
         CANVAS_CACHE[user_id] = {"data": items, "ts": datetime.now()}
@@ -621,19 +649,36 @@ def build_canvas_context(items):
     if not items:
         return "No upcoming Canvas items found."
     lines = ["CANVAS ACADEMIC DATA (real-time from Canvas LMS):\n"]
-    urgent = [i for i in items if i["urgency"] in ("overdue", "critical", "high")]
-    upcoming = [i for i in items if i["urgency"] in ("medium", "low")]
 
-    if urgent:
-        lines.append("⚠️  URGENT ITEMS:")
-        for i in urgent:
-            badge = "🔴 OVERDUE" if i["urgency"] == "overdue" else ("🔴 DUE TODAY" if i["urgency"] == "critical" else "🟠 DUE SOON")
-            lines.append(f"  • [{i['type'].upper()}] {i['title']} — {i['course']} | {badge} | {i['due_fmt']}")
-    if upcoming:
-        lines.append("\n📋 UPCOMING:")
-        for i in upcoming[:10]:
-            emoji = "🟡" if i["urgency"] == "medium" else "🟢"
-            lines.append(f"  • [{i['type'].upper()}] {i['title']} — {i['course']} | {emoji} {i['due_fmt']}")
+    pending = [i for i in items if i.get("status") == "pending"]
+    overdue = [i for i in items if i.get("status") == "overdue"]
+    completed = [i for i in items if i.get("status") == "completed"]
+
+    if overdue:
+        lines.append("⚠️  OVERDUE (past due, NOT submitted):")
+        for i in overdue:
+            lines.append(f"  • [{i['type'].upper()}] {i['title']} — {i['course']} | 🔴 OVERDUE | {i['due_fmt']}")
+
+    if pending:
+        urgent = [i for i in pending if i["urgency"] in ("critical", "high")]
+        upcoming = [i for i in pending if i["urgency"] in ("medium", "low")]
+        if urgent:
+            lines.append("\n🔶 DUE SOON:")
+            for i in urgent:
+                badge = "🔴 DUE TODAY" if i["urgency"] == "critical" else "🟠 DUE SOON"
+                lines.append(f"  • [{i['type'].upper()}] {i['title']} — {i['course']} | {badge} | {i['due_fmt']}")
+        if upcoming:
+            lines.append("\n📋 UPCOMING:")
+            for i in upcoming[:10]:
+                emoji = "🟡" if i["urgency"] == "medium" else "🟢"
+                lines.append(f"  • [{i['type'].upper()}] {i['title']} — {i['course']} | {emoji} {i['due_fmt']}")
+
+    if completed:
+        lines.append(f"\n✅ RECENTLY COMPLETED: {len(completed)} items")
+
+    if not pending and not overdue:
+        lines.append("🎉 All caught up! No pending assignments or quizzes.")
+
     return "\n".join(lines)
 
 
