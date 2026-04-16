@@ -472,35 +472,72 @@ def fetch_canvas_data(user_id):
     token = cfg["canvas_token"]
     items = []
 
+    # Cutoff: ignore anything due more than 14 days ago (definitely past)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+
+    def _is_relevant(due_at_str):
+        """True if due date is in the future or within last 14 days (or no due date)."""
+        if not due_at_str:
+            return True
+        try:
+            due = datetime.fromisoformat(due_at_str.replace("Z", "+00:00"))
+            return due > cutoff
+        except Exception:
+            return True
+
+    def _is_submitted(assignment):
+        """Check if assignment/quiz is already submitted or graded."""
+        sub = assignment.get("submission", {}) or {}
+        wf = sub.get("workflow_state", "")
+        if wf in ("submitted", "graded", "complete"):
+            return True
+        if sub.get("submitted_at"):
+            return True
+        if assignment.get("has_submitted_submissions"):
+            return True
+        # Check if score exists (graded = done)
+        if sub.get("score") is not None:
+            return True
+        return False
+
     try:
-        # 1. Active courses
+        # 1. Active courses (current term only)
         courses = _canvas_get(base, token, "/courses", {
             "enrollment_state": "active", "per_page": 50,
-            "include[]": ["term"]
+            "include[]": ["term", "total_scores"],
         })
-        if isinstance(courses, dict):   # error response
+        if isinstance(courses, dict):
             return None, courses.get("errors", [{}])[0].get("message", "Canvas error")
 
-        course_map = {c["id"]: c.get("name", f"Course {c['id']}") for c in courses}
+        # Filter to current term — skip courses from past terms
+        now = datetime.now(timezone.utc)
+        active_courses = []
+        for c in courses:
+            term = c.get("term", {}) or {}
+            end_at = term.get("end_at")
+            if end_at:
+                try:
+                    term_end = datetime.fromisoformat(end_at.replace("Z", "+00:00"))
+                    if term_end < now:
+                        continue  # past term, skip
+                except Exception:
+                    pass
+            active_courses.append(c)
 
-        for course in courses:
+        for course in active_courses:
             cid   = course["id"]
             cname = course.get("name", f"Course {cid}")
 
-            # 2. Assignments (include submission status to filter completed)
+            # 2. Assignments (include submission to check completion)
             try:
                 asgns = _canvas_get(base, token, f"/courses/{cid}/assignments", {
                     "per_page": 50, "order_by": "due_at",
                     "include[]": ["submission"],
                 })
                 for a in (asgns if isinstance(asgns, list) else []):
-                    # Skip if already submitted/graded
-                    sub = a.get("submission", {}) or {}
-                    workflow = sub.get("workflow_state", "")
-                    if workflow in ("submitted", "graded", "complete"):
+                    if _is_submitted(a):
                         continue
-                    # Skip if explicitly marked as submitted
-                    if a.get("has_submitted_submissions"):
+                    if not _is_relevant(a.get("due_at")):
                         continue
                     items.append({
                         "id":      f"asgn_{a['id']}",
@@ -517,12 +554,13 @@ def fetch_canvas_data(user_id):
             except Exception:
                 pass
 
-            # 3. Quizzes (skip completed)
+            # 3. Quizzes (skip completed/locked/past)
             try:
                 quizzes = _canvas_get(base, token, f"/courses/{cid}/quizzes", {"per_page": 50})
                 for q in (quizzes if isinstance(quizzes, list) else []):
-                    # Skip locked or completed quizzes
-                    if q.get("locked_for_user") or q.get("all_dates_completed"):
+                    if q.get("locked_for_user"):
+                        continue
+                    if not _is_relevant(q.get("due_at")):
                         continue
                     items.append({
                         "id":      f"quiz_{q['id']}",
