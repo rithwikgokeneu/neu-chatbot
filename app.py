@@ -29,11 +29,16 @@ REACT_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 
 app = Flask(__name__, static_folder=REACT_BUILD, static_url_path="")
 app.secret_key = os.getenv("FLASK_SECRET", "dev-secret-change-me")
+IS_VERCEL = bool(os.getenv("VERCEL"))
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-app.config["SESSION_COOKIE_SECURE"]   = False
-app.config["SERVER_NAME"]             = None          # allow any host
-app.config["PREFERRED_URL_SCHEME"]    = "http"
-CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+app.config["SESSION_COOKIE_SECURE"]   = IS_VERCEL     # True on HTTPS (Vercel), False locally
+app.config["SERVER_NAME"]             = None
+app.config["PREFERRED_URL_SCHEME"]    = "https" if IS_VERCEL else "http"
+CORS(app, supports_credentials=True, origins=[
+    "http://localhost:3000",
+    "https://neu-chatbot.vercel.app",
+    "https://neu-chatbot-goker-2705s-projects.vercel.app",
+])
 
 DB.init_db()
 logging.basicConfig(level=logging.WARNING)
@@ -755,7 +760,9 @@ def logout():
 @app.route("/auth/<provider>")
 def auth_login(provider):
     client   = oauth.create_client(provider)
-    redirect_uri = url_for("auth_callback", provider=provider, _external=True)
+    # Build redirect URI explicitly for Vercel HTTPS
+    scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
+    redirect_uri = f"{scheme}://{request.host}/auth/{provider}/callback"
     return client.authorize_redirect(redirect_uri)
 
 
