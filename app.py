@@ -774,8 +774,12 @@ def logout():
 def auth_login(provider):
     client   = oauth.create_client(provider)
     # Build redirect URI explicitly for Vercel HTTPS
-    scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
-    redirect_uri = f"{scheme}://{request.host}/auth/{provider}/callback"
+    # Use OAUTH_REDIRECT_BASE if set, otherwise derive from request
+    base = os.getenv("OAUTH_REDIRECT_BASE", "")
+    if not base:
+        scheme = "https" if request.headers.get("x-forwarded-proto") == "https" else request.scheme
+        base = f"{scheme}://{request.host}"
+    redirect_uri = f"{base}/auth/{provider}/callback"
     return client.authorize_redirect(redirect_uri)
 
 
